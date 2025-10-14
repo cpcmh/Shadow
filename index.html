@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-<title>🌳 그늘지도</title>
+<title>🌳 그늘지도 (보행자 중심)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="manifest" href="./manifest.json" />
 <script>
@@ -54,9 +54,12 @@ html, body, #map { height: 100%; margin: 0; padding: 0; }
 <script>
 const panel = document.getElementById('panel');
 const shadowLayer = L.layerGroup();
+const footwayLayer = L.layerGroup();
 const map = L.map('map');
 shadowLayer.addTo(map);
-const defaultLocation = [37.5665, 126.9780];
+footwayLayer.addTo(map);
+
+const defaultLocation = [37.5665, 126.9780]; // 서울시청 좌표
 let myLocation = null;
 let selectedTime = new Date();
 
@@ -64,6 +67,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap'
 }).addTo(map);
+
 map.setView(defaultLocation, 16);
 
 function getSunAngles(date, lat, lon){
@@ -98,6 +102,15 @@ async function fetchOSM(bounds){
   return res.json();
 }
 
+async function fetchFootways(bounds){
+  const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
+  const q = `[out:json][timeout:25];
+  way["highway"="footway"](${s},${w},${n},${e});
+  out body; >; out skel qt;`;
+  const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
+  return res.json();
+}
+
 async function drawShadows(center){
   const bounds = map.getBounds().pad(0.3);
   const data = await fetchOSM(bounds);
@@ -127,6 +140,37 @@ async function drawShadows(center){
   });
 
   panel.textContent = `☀️ 그림자 표시 완료 (${selectedTime.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})})`;
+
+  drawFootways(bounds, shadows);
+}
+
+async function drawFootways(bounds, shadows){
+  const data = await fetchFootways(bounds);
+  const nodes = {};
+  data.elements.forEach(el=>{ if(el.type==='node') nodes[el.id]=[el.lon,el.lat]; });
+
+  const footways=[];
+  data.elements.forEach(el=>{
+    if(el.type==='way'){
+      const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
+      if(coords.length>1)
+        footways.push({type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}});
+    }
+  });
+
+  footwayLayer.clearLayers();
+  footways.forEach(fw=>{
+    let shaded = false;
+    shadows.forEach(sh=>{
+      if(turf.intersect(sh, turf.buffer(fw, 0.00001))) shaded = true;
+    });
+    L.geoJSON(fw,{
+      style:{
+        color: shaded ? '#2ecc71' : '#b0b0b0',
+        weight: shaded ? 5 : 2
+      }
+    }).addTo(footwayLayer);
+  });
 }
 
 document.getElementById('locBtn').addEventListener('click', ()=>{
