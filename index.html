@@ -3,44 +3,20 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-<title>🌳 그늘지도 (보행자 중심)</title>
+<title>🌳 그늘 경로 안내</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="manifest" href="./manifest.json" />
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./service-worker.js');
-}
-</script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
 <style>
 html, body, #map { height: 100%; margin: 0; padding: 0; }
-#panel {
-  position: absolute; top: 10px; left: 10px;
-  z-index: 9999; background: rgba(255,255,255,0.95);
-  padding: 8px 12px; border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-  font-size: 14px;
-}
-#timeControl {
-  position: absolute; top: 10px; right: 10px;
-  z-index: 9999; background: rgba(255,255,255,0.95);
-  padding: 6px 10px; border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-  font-size: 14px;
-}
-#locBtn {
-  position: absolute; bottom: 20px; left: 50%;
-  transform: translateX(-50%);
-  z-index: 9999; padding: 10px 20px;
-  background: #1a73e8; color: #fff;
-  border: none; border-radius: 25px;
-  font-size: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-}
+#panel { position: absolute; top: 10px; left: 10px; z-index: 9999; background: rgba(255,255,255,0.95); padding: 8px 12px; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 14px;}
+#timeControl { position: absolute; top: 10px; right: 10px; z-index: 9999; background: rgba(255,255,255,0.95); padding: 6px 10px; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 14px;}
+#locBtn { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; padding: 10px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 25px; font-size: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);}
 .blur-shadow { filter: blur(3px); opacity: 0.45; }
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="panel">📡 위치를 가져오려면 아래 버튼을 눌러주세요</div>
+<div id="panel">📡 위치를 가져오려면 아래 버튼을 누르세요</div>
 <div id="timeControl">
   <label for="timeInput">시간:</label>
   <input type="time" id="timeInput" step="900">
@@ -48,20 +24,21 @@ html, body, #map { height: 100%; margin: 0; padding: 0; }
 <button id="locBtn">📍 내 위치 가져오기</button>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
 <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
 <script>
 const panel = document.getElementById('panel');
-const shadowLayer = L.layerGroup();
-const footwayLayer = L.layerGroup();
 const map = L.map('map');
-shadowLayer.addTo(map);
-footwayLayer.addTo(map);
+const shadowLayer = L.layerGroup().addTo(map);
+const footwayLayer = L.layerGroup().addTo(map);
+const routeLayer = L.layerGroup().addTo(map);
 
-const defaultLocation = [37.5665, 126.9780]; // 서울시청 좌표
+const defaultLocation = [37.5665, 126.9780];
 let myLocation = null;
 let selectedTime = new Date();
+let destination = null;
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
@@ -70,11 +47,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 map.setView(defaultLocation, 16);
 
+// ☀️ 그림자 계산
 function getSunAngles(date, lat, lon){
   const pos = SunCalc.getPosition(date, lat, lon);
   return { azimuth: (180+pos.azimuth*180/Math.PI)%360, altitude: pos.altitude*180/Math.PI };
 }
-
 function computeShadow(buildings, trees, az, alt){
   if(alt <= 0) return [];
   const tanAlt = Math.tan(alt*Math.PI/180);
@@ -91,7 +68,6 @@ function computeShadow(buildings, trees, az, alt){
   });
   return shadows;
 }
-
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
   const q = `[out:json][timeout:25];
@@ -101,24 +77,12 @@ async function fetchOSM(bounds){
   const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
   return res.json();
 }
-
-async function fetchFootways(bounds){
-  const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
-  const q = `[out:json][timeout:25];
-  way["highway"="footway"](${s},${w},${n},${e});
-  out body; >; out skel qt;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
-  return res.json();
-}
-
 async function drawShadows(center){
   const bounds = map.getBounds().pad(0.3);
   const data = await fetchOSM(bounds);
   if(!data) return;
-
   const nodes = {};
   data.elements.forEach(el=>{ if(el.type==='node') nodes[el.id]=[el.lon,el.lat]; });
-
   const buildings=[], trees=[];
   data.elements.forEach(el=>{
     if(el.type==='way' && el.tags?.building){
@@ -130,49 +94,17 @@ async function drawShadows(center){
         properties:{height:parseFloat(el.tags.height)||8,crown_diameter:parseFloat(el.tags["crown_diameter"])||5}});
     }
   });
-
   const ang = getSunAngles(selectedTime, center[0], center[1]);
   const shadows = computeShadow(buildings, trees, ang.azimuth, ang.altitude);
-
   shadowLayer.clearLayers();
   shadows.forEach(s=>{
     L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.45},className:'blur-shadow'}).addTo(shadowLayer);
   });
-
   panel.textContent = `☀️ 그림자 표시 완료 (${selectedTime.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})})`;
-
-  drawFootways(bounds, shadows);
+  return shadows;
 }
 
-async function drawFootways(bounds, shadows){
-  const data = await fetchFootways(bounds);
-  const nodes = {};
-  data.elements.forEach(el=>{ if(el.type==='node') nodes[el.id]=[el.lon,el.lat]; });
-
-  const footways=[];
-  data.elements.forEach(el=>{
-    if(el.type==='way'){
-      const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
-      if(coords.length>1)
-        footways.push({type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}});
-    }
-  });
-
-  footwayLayer.clearLayers();
-  footways.forEach(fw=>{
-    let shaded = false;
-    shadows.forEach(sh=>{
-      if(turf.intersect(sh, turf.buffer(fw, 0.00001))) shaded = true;
-    });
-    L.geoJSON(fw,{
-      style:{
-        color: shaded ? '#2ecc71' : '#b0b0b0',
-        weight: shaded ? 5 : 2
-      }
-    }).addTo(footwayLayer);
-  });
-}
-
+// 📍 위치 권한
 document.getElementById('locBtn').addEventListener('click', ()=>{
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
@@ -181,7 +113,7 @@ document.getElementById('locBtn').addEventListener('click', ()=>{
       L.circleMarker(myLocation,{radius:6,color:'#0a0'}).addTo(map);
       drawShadows(myLocation);
     },err=>{
-      alert("⚠️ 위치 권한이 거부되었습니다. 기본 위치로 표시됩니다.");
+      alert("⚠️ 위치 권한이 거부되었습니다.");
       drawShadows(defaultLocation);
     },{enableHighAccuracy:true});
   } else {
@@ -190,6 +122,7 @@ document.getElementById('locBtn').addEventListener('click', ()=>{
   }
 });
 
+// 🕒 시간 변경
 const timeInput = document.getElementById('timeInput');
 function initTime(){
   const now = new Date();
@@ -202,7 +135,51 @@ timeInput.addEventListener('change', ()=>{
 });
 initTime();
 
-map.on('moveend', ()=> drawShadows(myLocation || defaultLocation));
+// 🧭 목적지 클릭
+map.on('click', e=>{
+  destination = [e.latlng.lat, e.latlng.lng];
+  if(myLocation) routeToDestination();
+  else alert('📍 먼저 내 위치를 설정하세요');
+});
+
+// 🚶 경로 탐색 및 그늘 경로 계산
+async function routeToDestination(){
+  routeLayer.clearLayers();
+  const shadows = await drawShadows(myLocation);
+  const apiKey = "<YOUR_API_KEY>"; // ← 여기에 openrouteservice API키 입력
+  const url = `https://api.openrouteservice.org/v2/directions/foot-walking?api_key=${apiKey}`;
+  const body = {
+    coordinates: [[myLocation[1], myLocation[0]], [destination[1], destination[0]]],
+    instructions: false,
+    alternative_routes: { share_factor: 0.6, target_count: 3 }
+  };
+  const res = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const json = await res.json();
+  let bestRoute = null;
+  let bestShade = -1;
+
+  json.routes.forEach(r=>{
+    const coords = r.geometry.coordinates.map(c=>[c[0],c[1]]);
+    const line = turf.lineString(coords);
+    const length = turf.length(line,{units:'kilometers'});
+    let shadedLen = 0;
+    shadows.forEach(sh=>{
+      const inter = turf.lineIntersect(line, sh);
+      if(inter.features.length>0) shadedLen += length*0.6; // 간단 계산
+    });
+    const shadeRatio = shadedLen/length;
+    if(shadeRatio > bestShade){
+      bestShade = shadeRatio;
+      bestRoute = r;
+    }
+  });
+
+  if(bestRoute){
+    const latlngs = bestRoute.geometry.coordinates.map(c=>[c[1],c[0]]);
+    L.polyline(latlngs,{color:'#00cc44',weight:6}).addTo(routeLayer);
+    panel.textContent = `🟩 최적 경로 추천 (그늘 비율: ${(bestShade*100).toFixed(0)}%)`;
+  }
+}
 </script>
 </body>
 </html>
