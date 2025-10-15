@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 그림자 + 보도 교차 지도</title>
+<title>🌇 그림자 + 보도 경로</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -100,7 +100,7 @@ function computeShadows(polys, az, alt){
   return out;
 }
 
-// 🧭 Overpass 호출
+// 🧭 Overpass 호출 (보도 전용 필터 적용)
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
   const q = `
@@ -109,7 +109,9 @@ async function fetchOSM(bounds){
     way["building"](${s},${w},${n},${e});
     way["landuse"~"residential|commercial"](${s},${w},${n},${e});
     way["amenity"="school"](${s},${w},${n},${e});
-    way["highway"~"footway|pedestrian"](${s},${w},${n},${e});
+    way["highway"~"footway|pedestrian|path|living_street"](${s},${w},${n},${e});
+    way["highway"~"residential|service"]["sidewalk"](${s},${w},${n},${e});
+    way["foot"="yes"]["highway"~"residential|service"](${s},${w},${n},${e});
   );
   out body; >; out skel qt;
   `;
@@ -136,6 +138,7 @@ async function drawShadows(center, date){
     footwayFeatures=[];
 
     data.elements.forEach(el=>{
+      // 건물
       if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
         const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
         if(coords.length>3){
@@ -148,7 +151,12 @@ async function drawShadows(center, date){
           });
         }
       }
+      // 보도 (자동차 도로 제외)
       if(el.type==='way' && el.tags?.highway){
+        const hw = el.tags.highway;
+        if (["motorway","trunk","primary","secondary","tertiary"].includes(hw)) return;
+        if (el.tags.foot === 'no') return;
+
         const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
         if(coords.length>1){
           footwayFeatures.push({
