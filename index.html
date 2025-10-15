@@ -3,12 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌤️ 실시간 그림자 지도 (부지 포함)</title>
+<title>🌤️ 실시간 그림자 지도 (Relation 완전 지원)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
 .blur-shadow{filter:blur(3px);opacity:0.45;}
-#panel{position:absolute;top:10px;left:10px;z-index:9999;background:rgba(255,255,255,0.95);padding:8px 12px;border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,0.25);font-size:14px;}
+#panel{
+  position:absolute;
+  top:10px;left:10px;
+  z-index:9999;
+  background:rgba(255,255,255,0.95);
+  padding:8px 12px;
+  border-radius:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25);
+  font-size:14px;
+}
 </style>
 </head>
 <body>
@@ -69,9 +78,14 @@ async function fetchOSM(bounds){
       way["building"](${s},${w},${n},${e});
       way["landuse"~"residential|commercial"](${s},${w},${n},${e});
       way["amenity"="school"](${s},${w},${n},${e});
+      relation["landuse"~"residential|commercial"](${s},${w},${n},${e});
+      relation["amenity"="school"](${s},${w},${n},${e});
       node["natural"="tree"](${s},${w},${n},${e});
     );
-    out body; >; out skel qt;`;
+    out body;
+    >;
+    out skel qt;
+  `;
   const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
   return res.json();
 }
@@ -81,25 +95,49 @@ async function drawShadows(center){
   panel.textContent = '그림자 계산 중...';
   const bounds = map.getBounds().pad(0.3);
   const data = await fetchOSM(bounds);
+
   const nodes = {};
-  data.elements.forEach(el=>{if(el.type==='node') nodes[el.id]=[el.lon,el.lat];});
+  data.elements.forEach(el=>{
+    if(el.type==='node') nodes[el.id]=[el.lon,el.lat];
+  });
 
   const features=[], trees=[];
   data.elements.forEach(el=>{
+    // 🏢 way 처리
     if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
       const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
-      if(coords.length>3) {
+      if(coords.length>3){
         features.push({
           type:'Feature',
           geometry:{type:'Polygon',coordinates:[coords]},
           properties:{height:estimateHeight(el.tags)}
         });
       }
-    } else if(el.type==='node' && el.tags?.natural==='tree'){
+    }
+
+    // 🏢 relation 처리
+    if(el.type==='relation' && (el.tags?.landuse || el.tags?.amenity)){
+      // outer 멤버만 추출
+      const outers = el.members.filter(m=>m.role==='outer' && nodes[m.ref]);
+      const coords = outers.map(m=>[nodes[m.ref][0], nodes[m.ref][1]]);
+      if(coords.length>3){
+        features.push({
+          type:'Feature',
+          geometry:{type:'Polygon',coordinates:[coords]},
+          properties:{height:estimateHeight(el.tags)}
+        });
+      }
+    }
+
+    // 🌳 나무 처리
+    if(el.type==='node' && el.tags?.natural==='tree'){
       trees.push({
         type:'Feature',
         geometry:{type:'Point',coordinates:[el.lon,el.lat]},
-        properties:{height:parseFloat(el.tags.height)||8, crown_diameter:parseFloat(el.tags["crown_diameter"])||5}
+        properties:{
+          height:parseFloat(el.tags.height)||8,
+          crown_diameter:parseFloat(el.tags["crown_diameter"])||5
+        }
       });
     }
   });
@@ -113,7 +151,7 @@ async function drawShadows(center){
   });
 
   panel.textContent = myLocation 
-    ? '📍 현재 위치 기준 그림자 표시 완료' 
+    ? '📍 현재 위치 기준 그림자 표시 완료'
     : '📌 기본 위치(서울) 기준 그림자 표시 완료';
 }
 
