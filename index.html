@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 실시간 그림자+보도 지도</title>
+<title>🌇 그림자 + 보도 교차 지도</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -67,7 +67,6 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
 
 const shadowLayer = L.layerGroup().addTo(map);
 const footwayLayer = L.layerGroup().addTo(map);
-panel.textContent = '📌 기본 위치 로딩 완료 — 위치 권한 확인 중...';
 
 // ☀️ 태양 위치 계산
 function sunAngles(date, lat, lon){
@@ -174,18 +173,23 @@ async function drawShadows(center, date){
       L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer);
     });
 
-    // 보도와 그림자 교차 여부
-    const shadowCollection = { type:'FeatureCollection', features:shadows };
-
-    L.geoJSON({type:'FeatureCollection',features:footwayFeatures}, {
-      style: feature => {
-        const inShadow = shadows.some(sh => turf.booleanIntersects(feature, sh));
-        return {
+    // 보도와 그림자 교차 여부 (buffer 포함)
+    footwayFeatures.forEach(fw => {
+      const buffered = turf.buffer(fw, 0.00002, { units: 'kilometers' }); // 2m 폭 확장
+      let inShadow = false;
+      for (const sh of shadows) {
+        if (turf.booleanIntersects(buffered, sh) || turf.booleanOverlap(buffered, sh)) {
+          inShadow = true;
+          break;
+        }
+      }
+      L.geoJSON(fw, {
+        style: {
           color: inShadow ? 'green' : '#999',
           weight: 4
-        };
-      }
-    }).addTo(footwayLayer);
+        }
+      }).addTo(footwayLayer);
+    });
 
     panel.textContent = `✅ 그림자 ${buildingFeatures.length}개, 보도 ${footwayFeatures.length}개 / 고도 ${ang.alt.toFixed(1)}°`;
   } catch(err){
