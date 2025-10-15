@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 실시간 그림자 지도 - 통합버전 (시간조절 고정)</title>
+<title>🌇 실시간 그림자 지도 - 최적화 통합버전</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -43,7 +43,7 @@ html,body,#map{height:100%;margin:0;padding:0;}
 </head>
 <body>
 <div id="map"></div>
-<div id="panel">지도 로딩 중...</div>
+<div id="panel">🛰️ 지도 불러오는 중...</div>
 
 <!-- 🕒 시간 조절 UI -->
 <div id="timeControl">
@@ -61,20 +61,22 @@ const panel = document.getElementById('panel');
 const timePicker = document.getElementById('timePicker');
 const nowBtn = document.getElementById('nowBtn');
 
-const DEFAULT_LOC = [37.5665, 126.9780]; // 서울
+const DEFAULT_LOC = [37.5665, 126.9780]; // 서울 시청
 let myLocation = null;
 let currentDate = new Date();
 
-const map = L.map('map');
-const shadowLayer = L.layerGroup().addTo(map);
+const map = L.map('map', { zoomControl: true });
+map.setView(DEFAULT_LOC, 16);
 
-// 🗺️ 안정적인 타일 서버
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap, Carto'
 }).addTo(map);
 
-// ☀️ 태양 위치 계산
+const shadowLayer = L.layerGroup().addTo(map);
+panel.textContent = '📌 기본 위치 로딩 완료 — 위치 권한 확인 중...';
+
+// 🌞 태양 위치 계산
 function sunAngles(date, lat, lon){
   const p = SunCalc.getPosition(date, lat, lon);
   return { az: (180 + p.azimuth * 180/Math.PI)%360, alt: p.altitude*180/Math.PI };
@@ -110,7 +112,7 @@ function computeShadows(polys, az, alt){
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
   const q = `
-  [out:json][timeout:25];
+  [out:json][timeout:15];
   (
     way["building"](${s},${w},${n},${e});
     way["landuse"~"residential|commercial"](${s},${w},${n},${e});
@@ -118,7 +120,10 @@ async function fetchOSM(bounds){
   );
   out body; >; out skel qt;
   `;
-  const res = await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q});
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 15000);
+  const res = await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q,signal:controller.signal});
+  clearTimeout(timeout);
   if(!res.ok) throw new Error('Overpass API 오류');
   return res.json();
 }
@@ -126,7 +131,7 @@ async function fetchOSM(bounds){
 // 🌇 그림자 렌더링
 async function drawShadows(center, date){
   try {
-    panel.textContent = '그림자 계산 중...';
+    panel.textContent = '☀️ 그림자 계산 중...';
     const bounds = map.getBounds().pad(0.3);
     const data = await fetchOSM(bounds);
     const nodes = {};
@@ -157,14 +162,14 @@ async function drawShadows(center, date){
       L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer);
     });
 
-    panel.textContent = `✅ 그림자 계산 완료 (${features.length}개 건물) / 고도 ${ang.alt.toFixed(2)}°`;
+    panel.textContent = `✅ 그림자 계산 완료 (${features.length}개 건물) / 태양 고도 ${ang.alt.toFixed(1)}°`;
   } catch(err){
-    console.error('그림자 계산 오류:', err);
-    panel.textContent = '⚠️ 데이터 로딩 실패 — 지도를 이동하거나 다시 시도하세요.';
+    console.warn('그림자 계산 오류:', err);
+    panel.textContent = '⚠️ 그림자 데이터 불러오기 실패 — 지도는 정상 표시 중';
   }
 }
 
-// 📍 위치 권한 처리
+// 📍 위치 권한 처리 (지도를 먼저 띄우고 위치는 나중에 반영)
 function initLocation(){
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
@@ -175,14 +180,12 @@ function initLocation(){
       map.on('moveend', ()=>drawShadows(myLocation, currentDate));
     }, err=>{
       console.warn('위치 권한 거부 또는 오류', err);
-      map.setView(DEFAULT_LOC,16);
-      panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시';
+      panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시 중';
       drawShadows(DEFAULT_LOC, currentDate);
       map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
-    }, {enableHighAccuracy:true, timeout:10000});
+    }, {enableHighAccuracy:true, timeout:8000});
   } else {
-    map.setView(DEFAULT_LOC,16);
-    panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)로 표시';
+    panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)';
     drawShadows(DEFAULT_LOC, currentDate);
     map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
   }
@@ -207,6 +210,8 @@ nowBtn.addEventListener('click', ()=>{
   drawShadows(myLocation || DEFAULT_LOC, currentDate);
 });
 
+// 🌍 지도 먼저 띄우고, 그림자 로딩은 비동기로 진행
+panel.textContent = '🗺️ 지도 로딩 완료 — 그림자 계산 시작...';
 initLocation();
 </script>
 </body>
