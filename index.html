@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>🌿 그늘 보도 지도 (300m 반경 최적화)</title>
+<title>🌿 그늘 보도 지도 (2km 반경)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -74,8 +74,8 @@ function computeShadows(polys, az, alt){
 }
 
 async function fetchOSM(center){
-  const radius = 0.3; // km
-  const offsetDeg = radius / 111; // 위도 1도 ≈ 111km
+  const radius = 2.0; // ✅ 2km 반경
+  const offsetDeg = radius / 111;
   const lat = center[0], lon = center[1];
   const s = lat - offsetDeg;
   const n = lat + offsetDeg;
@@ -83,7 +83,7 @@ async function fetchOSM(center){
   const e = lon + offsetDeg;
 
   const q = `
-  [out:json][timeout:15];
+  [out:json][timeout:25];
   (
     way["building"](${s},${w},${n},${e});
     way["landuse"~"residential|commercial"](${s},${w},${n},${e});
@@ -94,7 +94,7 @@ async function fetchOSM(center){
   );
   out body; >; out skel qt;`;
   const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),10000);
+  const timeout=setTimeout(()=>controller.abort(),20000);
   const res=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q,signal:controller.signal});
   clearTimeout(timeout);
   if(!res.ok) throw new Error('Overpass API 오류');
@@ -196,7 +196,7 @@ function initLocation(){
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
       myLocation=[pos.coords.latitude,pos.coords.longitude];
-      map.setView(myLocation,16);
+      map.setView(myLocation,15);
       L.circleMarker(myLocation,{radius:6,color:'#0a0'}).addTo(map);
       drawAll(myLocation,currentDate);
     },err=>{
