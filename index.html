@@ -1,43 +1,30 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 그림자 + 보도 경로</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>🌿 그늘 보도 지도 (정밀 교차 판정)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
 .blur-shadow{filter:blur(3px);opacity:0.45;}
 #panel{
   position:absolute;top:10px;left:10px;z-index:9999;
-  background:rgba(255,255,255,0.95);
-  padding:8px 12px;border-radius:12px;
-  box-shadow:0 2px 6px rgba(0,0,0,0.25);
-  font-size:14px;max-width:90vw;
+  background:rgba(255,255,255,0.95);padding:8px 12px;border-radius:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25);font-size:14px;max-width:90vw;
 }
-#timeControl {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 10000;
-  background: rgba(255, 255, 255, 0.95);
-  padding: 8px 12px;
-  border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-  font-size: 14px;
-  display: flex;
-  gap: 5px;
-  flex-wrap: wrap;
+#timeControl{
+  position:absolute;top:10px;right:10px;z-index:10000;
+  background:rgba(255,255,255,0.95);padding:8px 12px;border-radius:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25);font-size:14px;display:flex;gap:6px;flex-wrap:wrap;
 }
-#timePicker { font-size: 14px; padding: 2px; min-width: 100px; }
-#nowBtn { font-size: 13px; padding: 3px 6px; cursor: pointer; }
+#timePicker{font-size:14px;min-width:110px}
+#nowBtn{font-size:13px;padding:3px 6px;cursor:pointer}
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="panel">🛰️ 지도 불러오는 중...</div>
-
-<!-- 🕒 시간 조절 UI -->
+<div id="panel">🗺️ 지도 로딩…</div>
 <div id="timeControl">
   <label for="timePicker">시간:</label>
   <input type="time" id="timePicker" step="300">
@@ -47,60 +34,51 @@ html,body,#map{height:100%;margin:0;padding:0;}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
 <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
-
 <script>
 const panel = document.getElementById('panel');
 const timePicker = document.getElementById('timePicker');
 const nowBtn = document.getElementById('nowBtn');
 
-const DEFAULT_LOC = [37.5665, 126.9780];
+const DEFAULT_LOC = [37.5665,126.9780];
 let myLocation = null;
 let currentDate = new Date();
 
-const map = L.map('map', { zoomControl: true });
-map.setView(DEFAULT_LOC, 16);
-
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; OpenStreetMap, Carto'
+const map = L.map('map',{zoomControl:true}).setView(DEFAULT_LOC,16);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',{
+  maxZoom:19,attribution:'&copy; OpenStreetMap, Carto'
 }).addTo(map);
 
 const shadowLayer = L.layerGroup().addTo(map);
-const footwayLayer = L.layerGroup().addTo(map);
+const footwayBaseLayer = L.layerGroup().addTo(map);   // 회색 보도
+const footwayShadowLayer = L.layerGroup().addTo(map); // 초록 세그먼트
 
-// ☀️ 태양 위치 계산
+// Sun
 function sunAngles(date, lat, lon){
   const p = SunCalc.getPosition(date, lat, lon);
-  return { az: (180 + p.azimuth * 180/Math.PI)%360, alt: p.altitude*180/Math.PI };
+  return { az:(180+p.azimuth*180/Math.PI)%360, alt:p.altitude*180/Math.PI };
 }
-
-// 🏢 기본 높이 추정
+// 높이 추정
 function estimateHeight(tags={}){
   if(tags.height) return parseFloat(tags.height);
   if(tags["building:levels"]) return parseFloat(tags["building:levels"])*3;
-  if(tags.amenity === 'school') return 20;
-  if(tags.landuse === 'residential') return 50;
+  if(tags.amenity==='school') return 20;
+  if(tags.landuse==='residential') return 50;
   return 12;
 }
-
-// 🏢 그림자 계산
+// 그림자(건물 폴리곤 평행이동)
 function computeShadows(polys, az, alt){
   if(alt<=0) return [];
-  const tanAlt = Math.tan(alt*Math.PI/180);
-  const dir = (az+180)%360;
+  const tanAlt=Math.tan(alt*Math.PI/180);
+  const dir=(az+180)%360;
   const out=[];
   for(const f of polys){
-    const h = f.properties.height || 12;
-    try {
-      out.push(turf.transformTranslate(f, h/tanAlt/1000, dir, {units:'kilometers'}));
-    } catch(e){
-      console.error('Shadow projection error', e);
-    }
+    const h=f.properties.height||12;
+    try{ out.push(turf.transformTranslate(f, h/tanAlt/1000, dir, {units:'kilometers'})); }catch(e){}
   }
   return out;
 }
 
-// 🧭 Overpass 호출 (보도 전용 필터 적용)
+// Overpass: 건물 + 보행자 경로만
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
   const q = `
@@ -109,142 +87,182 @@ async function fetchOSM(bounds){
     way["building"](${s},${w},${n},${e});
     way["landuse"~"residential|commercial"](${s},${w},${n},${e});
     way["amenity"="school"](${s},${w},${n},${e});
+
     way["highway"~"footway|pedestrian|path|living_street"](${s},${w},${n},${e});
     way["highway"~"residential|service"]["sidewalk"](${s},${w},${n},${e});
     way["foot"="yes"]["highway"~"residential|service"](${s},${w},${n},${e});
   );
-  out body; >; out skel qt;
-  `;
-  const controller = new AbortController();
-  const timeout = setTimeout(()=>controller.abort(), 15000);
-  const res = await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q,signal:controller.signal});
+  out body; >; out skel qt;`;
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),15000);
+  const res=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q,signal:controller.signal});
   clearTimeout(timeout);
   if(!res.ok) throw new Error('Overpass API 오류');
   return res.json();
 }
 
-let footwayFeatures = [];
+let footwayFeatures=[];
 
-// 🌇 그림자 + 보도 렌더링
-async function drawShadows(center, date){
-  try {
-    panel.textContent = '☀️ 데이터 불러오는 중...';
+// 핵심: 보도선을 5m 간격으로 샘플링 → 그림자 내부 구간만 초록색
+function drawFootwaysWithShadow(footways, shadows){
+  footwayBaseLayer.clearLayers();
+  footwayShadowLayer.clearLayers();
+
+  // 1) 모든 보도 회색으로 기본 표시
+  L.geoJSON({type:'FeatureCollection',features:footways},{style:{color:'#999',weight:3}}).addTo(footwayBaseLayer);
+
+  if(shadows.length===0) return;
+
+  // 2) 샘플링 & 세그먼트 색칠
+  const shadowPolys = shadows; // polygons array
+  const STEP_M = 5;            // 샘플 간격(미터)
+  const TOL_M  = 2;            // 허용 오차(미터) — 가장자리도 그늘로 인정
+
+  footways.forEach(fw=>{
+    const line = turf.lineString(fw.geometry.coordinates);
+    const len_km = turf.length(line,{units:'kilometers'});
+    const step_km = STEP_M/1000;
+    const samples = Math.max(2, Math.ceil(len_km/step_km));
+
+    // 샘플 포인트들
+    const pts = [];
+    for(let i=0;i<=samples;i++){
+      const p = turf.along(line, Math.min(i*step_km, len_km), {units:'kilometers'});
+      pts.push(p);
+    }
+
+    // 포인트 기준으로 작은 세그먼트 생성 & 그늘 여부 판정
+    for(let i=0;i<pts.length-1;i++){
+      const p1 = pts[i], p2 = pts[i+1];
+      const mid = turf.midpoint(p1,p2);
+
+      // mid가 그림자 내부/가까이에 있는지 검사
+      let inShadow=false;
+      // 1) 내부 판정
+      for(const sh of shadowPolys){
+        if(turf.booleanPointInPolygon(mid, sh)){ inShadow=true; break; }
+      }
+      // 2) 가장자리 허용(2m 버퍼)
+      if(!inShadow){
+        const midBuf = turf.buffer(mid, TOL_M/1000, {units:'kilometers'});
+        for(const sh of shadowPolys){
+          if(turf.booleanIntersects(midBuf, sh)){ inShadow=true; break; }
+        }
+      }
+
+      if(inShadow){
+        const seg = L.geoJSON(
+          turf.lineString([p1.geometry.coordinates, p2.geometry.coordinates]),
+          {style:{color:'green',weight:5}}
+        );
+        seg.addTo(footwayShadowLayer);
+      }
+    }
+  });
+}
+
+async function drawAll(center, date){
+  try{
+    panel.textContent='☀️ 데이터 불러오는 중...';
     const bounds = map.getBounds().pad(0.3);
     const data = await fetchOSM(bounds);
-    const nodes = {};
-    data.elements.forEach(el=>{if(el.type==='node') nodes[el.id]=[el.lon,el.lat];});
 
-    const buildingFeatures=[];
+    // 인덱스 구성
+    const nodes={}; const ways={};
+    for(const el of data.elements){
+      if(el.type==='node') nodes[el.id]=[el.lon,el.lat];
+      if(el.type==='way') ways[el.id]=el;
+    }
+
+    // 건물 폴리곤
+    const buildings=[];
+    // 보행자 경로
     footwayFeatures=[];
 
-    data.elements.forEach(el=>{
-      // 건물
-      if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
-        const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
+    for(const id in ways){
+      const el = ways[id];
+      const tags = el.tags||{};
+      const coords = (el.nodes||[]).map(nid=>nodes[nid]).filter(Boolean);
+
+      // 건물/부지
+      if(tags.building || tags.landuse || tags.amenity){
         if(coords.length>3){
           const f=coords[0], l=coords[coords.length-1];
           if(f[0]!==l[0] || f[1]!==l[1]) coords.push(f);
-          buildingFeatures.push({
+          buildings.push({
             type:'Feature',
             geometry:{type:'Polygon',coordinates:[coords]},
-            properties:{height:estimateHeight(el.tags)}
+            properties:{height:estimateHeight(tags)}
           });
         }
       }
-      // 보도 (자동차 도로 제외)
-      if(el.type==='way' && el.tags?.highway){
-        const hw = el.tags.highway;
-        if (["motorway","trunk","primary","secondary","tertiary"].includes(hw)) return;
-        if (el.tags.foot === 'no') return;
 
-        const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
+      // 보행자 경로 (자동차 중심 도로 제외)
+      if(tags.highway){
+        const hw = tags.highway;
+        if(["motorway","trunk","primary","secondary","tertiary"].includes(hw)) continue;
+        if(tags.foot==='no') continue;
         if(coords.length>1){
-          footwayFeatures.push({
-            type:'Feature',
-            geometry:{type:'LineString',coordinates:coords},
-            properties:{}
-          });
+          footwayFeatures.push({type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}});
         }
       }
-    });
+    }
 
+    // 태양/그림자
     const ang = sunAngles(date, center[0], center[1]);
-    const shadows = computeShadows(buildingFeatures, ang.az, ang.alt);
+    const shadows = computeShadows(buildings, ang.az, ang.alt);
 
+    // 그리기
     shadowLayer.clearLayers();
-    footwayLayer.clearLayers();
+    L.geoJSON({type:'FeatureCollection',features:buildings},{style:{color:'#555',weight:1,fillOpacity:0.05}}).addTo(shadowLayer);
+    shadows.forEach(s=> L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer));
 
-    // 건물 및 그림자 표시
-    L.geoJSON({type:'FeatureCollection',features:buildingFeatures},
-      {style:{color:'#555',weight:1,fillOpacity:0.05}}).addTo(shadowLayer);
-    shadows.forEach(s=>{
-      L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer);
-    });
+    // 보도 + 정밀 교차 세그먼트
+    drawFootwaysWithShadow(footwayFeatures, shadows);
 
-    // 보도와 그림자 교차 여부 (buffer 포함)
-    footwayFeatures.forEach(fw => {
-      const buffered = turf.buffer(fw, 0.00002, { units: 'kilometers' }); // 2m 폭 확장
-      let inShadow = false;
-      for (const sh of shadows) {
-        if (turf.booleanIntersects(buffered, sh) || turf.booleanOverlap(buffered, sh)) {
-          inShadow = true;
-          break;
-        }
-      }
-      L.geoJSON(fw, {
-        style: {
-          color: inShadow ? 'green' : '#999',
-          weight: 4
-        }
-      }).addTo(footwayLayer);
-    });
-
-    panel.textContent = `✅ 그림자 ${buildingFeatures.length}개, 보도 ${footwayFeatures.length}개 / 고도 ${ang.alt.toFixed(1)}°`;
-  } catch(err){
-    console.warn('그림자 계산 오류:', err);
-    panel.textContent = '⚠️ 데이터 불러오기 실패 — 지도는 정상 표시 중';
+    panel.textContent=`✅ 건물 ${buildings.length} / 보도 ${footwayFeatures.length} • 태양고도 ${ang.alt.toFixed(1)}°`;
+  }catch(e){
+    console.warn(e);
+    panel.textContent='⚠️ 데이터 로딩 실패 — 지도를 이동하거나 다시 시도하세요.';
   }
 }
 
-// 📍 위치 권한 처리
+// 위치 권한
 function initLocation(){
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
       myLocation=[pos.coords.latitude,pos.coords.longitude];
       map.setView(myLocation,16);
       L.circleMarker(myLocation,{radius:6,color:'#0a0'}).addTo(map);
-      drawShadows(myLocation, currentDate);
-      map.on('moveend', ()=>drawShadows(myLocation, currentDate));
+      drawAll(myLocation, currentDate);
+      map.on('moveend', ()=>drawAll(myLocation, currentDate));
     }, err=>{
-      console.warn('위치 권한 거부 또는 오류', err);
-      panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)';
-      drawShadows(DEFAULT_LOC, currentDate);
-      map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
+      panel.textContent='📌 위치 권한 없음 — 기본 위치(서울)';
+      drawAll(DEFAULT_LOC, currentDate);
+      map.on('moveend', ()=>drawAll(DEFAULT_LOC, currentDate));
     }, {enableHighAccuracy:true, timeout:8000});
   } else {
-    panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)';
-    drawShadows(DEFAULT_LOC, currentDate);
-    map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
+    panel.textContent='📌 위치 정보 미지원 — 기본 위치(서울)';
+    drawAll(DEFAULT_LOC, currentDate);
+    map.on('moveend', ()=>drawAll(DEFAULT_LOC, currentDate));
   }
 }
 
-// ⏰ 시간 조절 기능
-function getSelectedDate() {
-  const d = new Date();
-  if (timePicker.value) {
-    const [h, m] = timePicker.value.split(':');
-    d.setHours(parseInt(h), parseInt(m));
+// 시간 조절
+function selectedDate(){
+  const d=new Date();
+  if(timePicker.value){
+    const [h,m]=timePicker.value.split(':'); d.setHours(+h, +m);
   }
   return d;
 }
 timePicker.addEventListener('input', ()=>{
-  currentDate = getSelectedDate();
-  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+  currentDate=selectedDate();
+  drawAll(myLocation||DEFAULT_LOC, currentDate);
 });
 nowBtn.addEventListener('click', ()=>{
-  timePicker.value = '';
-  currentDate = new Date();
-  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+  timePicker.value=''; currentDate=new Date();
+  drawAll(myLocation||DEFAULT_LOC, currentDate);
 });
 
 initLocation();
