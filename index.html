@@ -3,18 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌤️ 실시간 그림자 지도 (Relation 완전 처리)</title>
+<title>🌤️ 실시간 그림자 지도 (아파트·학교 multipolygon 대응)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
 .blur-shadow{filter:blur(3px);opacity:0.45;}
 #panel{
   position:absolute;top:10px;left:10px;z-index:9999;
-  background:rgba(255,255,255,0.95);
-  padding:8px 12px;
-  border-radius:12px;
-  box-shadow:0 2px 6px rgba(0,0,0,0.25);
-  font-size:14px;
+  background:rgba(255,255,255,0.95);padding:8px 12px;
+  border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,0.25);
+  font-size:14px;max-width:90vw;
 }
 </style>
 </head>
@@ -28,162 +26,274 @@ html,body,#map{height:100%;margin:0;padding:0;}
 
 <script>
 const map = L.map('map');
-const shadowLayer = L.layerGroup().addTo(map);
 const panel = document.getElementById('panel');
+const shadowLayer = L.layerGroup().addTo(map);
 
 let myLocation = null;
-const defaultLocation = [37.5665, 126.9780];
+const DEFAULT_LOC = [37.5665,126.9780]; // 서울 시청
 
-// ☀️ 태양 위치 계산
-function getSunAngles(date, lat, lon){
-  const pos = SunCalc.getPosition(date, lat, lon);
-  return {azimuth:(180+pos.azimuth*180/Math.PI)%360, altitude:pos.altitude*180/Math.PI};
+// ---------- SunCalc ----------
+function sunAngles(date, lat, lon){
+  const p = SunCalc.getPosition(date, lat, lon);
+  return { az: (180 + p.azimuth*180/Math.PI)%360, alt: p.altitude*180/Math.PI };
 }
 
-// 🏢 기본 높이 추정
-function estimateHeight(tags){
+// ---------- 높이 추정 ----------
+function estimateHeight(tags={}){
   if(tags.height) return parseFloat(tags.height);
+  if(tags["building:levels"]) return parseFloat(tags["building:levels"])*3;
   if(tags.amenity === 'school') return 20;
-  if(tags.landuse === 'residential') return 50;
-  if(tags.landuse === 'commercial') return 30;
-  return 12;
+  if(tags.amenity === 'university' || tags.amenity === 'college') return 22;
+  if(tags.landuse === 'residential') return 50;     // 아파트 단지
+  if(tags.landuse === 'commercial' || tags.landuse==='retail') return 30;
+  if(tags.landuse === 'industrial') return 18;
+  return 12; // 기본
 }
 
-// 🏢 그림자 계산
-function computeShadow(features, trees, az, alt){
+// ---------- 그림자 생성 ----------
+function computeShadows(polys, trees, az, alt){
   if(alt<=0) return [];
   const tanAlt = Math.tan(alt*Math.PI/180);
-  const sunDir = (az+180)%360;
-  const shadows=[];
-  features.forEach(f=>{
-    const h = f.properties.height;
-    shadows.push(turf.transformTranslate(f,h/tanAlt/1000,sunDir,{units:'kilometers'}));
-  });
-  trees.forEach(t=>{
-    const h=t.properties.height||8;
-    const r=(t.properties.crown_diameter||5)/111000;
-    shadows.push(turf.transformTranslate(turf.buffer(t,r),h/tanAlt/1000,sunDir,{units:'kilometers'}));
-  });
-  return shadows;
+  const dir = (az+180)%360;
+  const out = [];
+  for(const f of polys){
+    const h = f.properties.height || 12;
+    try{
+      out.push(turf.transformTranslate(f, h/tanAlt/1000, dir, {units:'kilometers'}));
+    }catch(e){}
+  }
+  for(const t of trees){
+    const h = t.properties.height || 8;
+    const r = (t.properties.crown_diameter || 5)/111000; // ~m→deg via turf.buffer (km 단위로도 가능하지만 간단화)
+    try{
+      const circ = turf.buffer(t, r);
+      out.push(turf.transformTranslate(circ, h/tanAlt/1000, dir, {units:'kilometers'}));
+    }catch(e){}
+  }
+  return out;
 }
 
-// 🗺️ OSM 데이터 가져오기
+// ---------- Overpass ----------
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
+
+  // 핵심: relation(아파트/학교) → outer way → node 로 조립하기 위해
+  // relations, ways, nodes를 모두 한 번에 받아온다.
   const q = `
-    [out:json][timeout:30];
-    (
-      way["building"](${s},${w},${n},${e});
-      way["landuse"~"residential|commercial"](${s},${w},${n},${e});
-      way["amenity"="school"](${s},${w},${n},${e});
-      relation["landuse"~"residential|commercial"](${s},${w},${n},${e});
-      relation["amenity"="school"](${s},${w},${n},${e});
-      node["natural"="tree"](${s},${w},${n},${e});
-    );
-    out body; >; out skel qt;
-  `;
-  const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
+  [out:json][timeout:60];
+  (
+    // 일반 건물
+    way["building"](${s},${w},${n},${e});
+    // 부지(아파트·상업·학교 등) - way
+    way["landuse"~"residential|commercial|retail|industrial"](${s},${w},${n},${e});
+    way["amenity"~"school|college|university"](${s},${w},${n},${e});
+
+    // 부지(아파트·학교 등) - relation (multipolygon)
+    relation["landuse"~"residential|commercial|retail|industrial"](${s},${w},${n},${e});
+    relation["amenity"~"school|college|university"](${s},${w},${n},${e});
+
+    // 나무
+    node["natural"="tree"](${s},${w},${n},${e});
+  );
+  out body;
+  >;
+  out skel qt;`;
+
+  const res = await fetch('https://overpass-api.de/api/interpreter',{method:'POST', body:q});
+  if(!res.ok) throw new Error('Overpass 오류: '+res.status);
   return res.json();
 }
 
-// 🌳 그림자 표시
-async function drawShadows(center){
-  panel.textContent = '그림자 계산 중...';
-  const bounds = map.getBounds().pad(0.3);
-  const data = await fetchOSM(bounds);
+// ---------- Relation(outer ways) → 닫힌 폴리곤 링 조립 ----------
+function assembleRelationPolygons(rel, waysMap, nodesMap){
+  // outer ways만 수집
+  const outerWays = rel.members.filter(m=>m.role==='outer' && m.type==='way' && waysMap[m.ref]);
+  if(!outerWays.length) return [];
 
-  const nodes = {};
-  const ways = {};
-
-  data.elements.forEach(el=>{
-    if(el.type==='node') nodes[el.id]=[el.lon,el.lat];
-    if(el.type==='way') ways[el.id]=el;
+  // 각 way를 노드 ID 시퀀스로 준비
+  const segments = outerWays.map(m=>{
+    const w = waysMap[m.ref];
+    return w.nodes.slice(); // node ID 배열
   });
 
-  const features=[], trees=[];
+  // 링을 만들기 위해 끝점이 맞닿는 세그먼트들을 이어붙인다.
+  const rings = [];
+  while(segments.length){
+    let ring = segments.shift();
+    let extended = true;
+    while(extended){
+      extended = false;
+      for(let i=0;i<segments.length;i++){
+        const seg = segments[i];
+        const aStart = ring[0], aEnd = ring[ring.length-1];
+        const bStart = seg[0],  bEnd = seg[seg.length-1];
 
-  // way 처리
-  for (const id in ways){
-    const el = ways[id];
-    if(el.tags && (el.tags.building || el.tags.landuse || el.tags.amenity)){
-      const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
-      if(coords.length>3){
-        features.push({
-          type:'Feature',
-          geometry:{type:'Polygon',coordinates:[coords]},
-          properties:{height:estimateHeight(el.tags)}
-        });
+        if(aEnd === bStart){
+          // ...A ---- B...
+          ring = ring.concat(seg.slice(1));
+          segments.splice(i,1);
+          extended = true; break;
+        } else if(aEnd === bEnd){
+          // ...A ==== B...
+          ring = ring.concat(seg.slice(0,-1).reverse());
+          segments.splice(i,1);
+          extended = true; break;
+        } else if(aStart === bEnd){
+          // B... ==== ...A
+          ring = seg.concat(ring.slice(1));
+          segments.splice(i,1);
+          extended = true; break;
+        } else if(aStart === bStart){
+          // B... ---- ...A (뒤집어서 연결)
+          ring = seg.reverse().concat(ring.slice(1));
+          segments.splice(i,1);
+          extended = true; break;
+        }
       }
+    }
+    // 닫힌지 확인 (첫/끝 노드 동일)
+    if(ring.length>=4 && ring[0] === ring[ring.length-1]){
+      rings.push(ring);
+    } else {
+      // 일부 relation은 완전히 닫히지 않을 수 있음 → 무시
     }
   }
 
-  // relation 처리
-  data.elements.forEach(el=>{
-    if(el.type==='relation' && (el.tags?.landuse || el.tags?.amenity)){
-      const outerWays = el.members.filter(m=>m.role==='outer' && ways[m.ref]);
-      if(outerWays.length){
-        const outerWay = ways[outerWays[0].ref]; // 첫 outer만 사용
-        const coords = outerWay.nodes.map(i=>nodes[i]).filter(Boolean);
-        if(coords.length>3){
-          features.push({
-            type:'Feature',
-            geometry:{type:'Polygon',coordinates:[coords]},
-            properties:{height:estimateHeight(el.tags)}
-          });
-        }
-      }
+  // node id → lon/lat
+  const polys = rings.map(ring=>{
+    const coords = ring.map(nid => nodesMap[nid]).filter(Boolean);
+    // 좌표 누락시 무시
+    if(coords.length === ring.length) {
+      return coords;
     }
-  });
+    return null;
+  }).filter(Boolean);
 
-  // 나무 처리
-  data.elements.forEach(el=>{
-    if(el.type==='node' && el.tags?.natural==='tree'){
-      trees.push({
-        type:'Feature',
-        geometry:{type:'Point',coordinates:[el.lon,el.lat]},
-        properties:{
-          height:parseFloat(el.tags.height)||8,
-          crown_diameter:parseFloat(el.tags["crown_diameter"])||5
-        }
-      });
-    }
-  });
-
-  const ang = getSunAngles(new Date(), center[0], center[1]);
-  const shadows = computeShadow(features, trees, ang.azimuth, ang.altitude);
-
-  shadowLayer.clearLayers();
-  shadows.forEach(s=>{
-    L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.45},className:'blur-shadow'}).addTo(shadowLayer);
-  });
-
-  panel.textContent = myLocation 
-    ? '📍 현재 위치 기준 그림자 표시 완료'
-    : '📌 기본 위치(서울) 기준 그림자 표시 완료';
+  return polys;
 }
 
-// 📍 위치 권한 요청
+// ---------- 그림자 그리기 ----------
+async function drawShadows(centerLatLng){
+  try{
+    panel.textContent = '그림자 계산 중...';
+    const bounds = map.getBounds().pad(0.3);
+    const data = await fetchOSM(bounds);
+
+    // 맵
+    const nodes = {};      // id -> [lon,lat]
+    const ways = {};       // id -> way element
+    const relations = [];  // relation elements
+    const trees = [];
+
+    for(const el of data.elements){
+      if(el.type==='node'){
+        nodes[el.id] = [el.lon, el.lat];
+        if(el.tags && el.tags.natural==='tree'){
+          trees.push({
+            type:'Feature',
+            geometry:{type:'Point', coordinates:[el.lon, el.lat]},
+            properties:{
+              height: parseFloat(el.tags.height)||8,
+              crown_diameter: parseFloat(el.tags['crown_diameter'])||5
+            }
+          });
+        }
+      } else if(el.type==='way'){
+        ways[el.id] = el;
+      } else if(el.type==='relation'){
+        relations.push(el);
+      }
+    }
+
+    // 폴리곤 후보(건물+부지)
+    const polys = [];
+
+    // 1) way 기반 폴리곤
+    for(const id in ways){
+      const w = ways[id];
+      const tags = w.tags||{};
+      if(!(tags.building || tags.landuse || tags.amenity)) continue;
+      const coords = (w.nodes||[]).map(nid=>nodes[nid]).filter(Boolean);
+      if(coords.length>=3){
+        // 닫혀있지 않으면 닫기
+        const first = coords[0], last = coords[coords.length-1];
+        if(first[0]!==last[0] || first[1]!==last[1]) coords.push(first);
+        polys.push({
+          type:'Feature',
+          geometry:{type:'Polygon', coordinates:[coords]},
+          properties:{height: estimateHeight(tags)}
+        });
+      }
+    }
+
+    // 2) relation 기반 multipolygon(아파트/학교 등)
+    for(const rel of relations){
+      const tags = rel.tags||{};
+      if(!(tags.landuse || tags.amenity)) continue;
+      const outerPolys = assembleRelationPolygons(rel, ways, nodes);
+      for(const ring of outerPolys){
+        polys.push({
+          type:'Feature',
+          geometry:{type:'Polygon', coordinates:[ring]},
+          properties:{height: estimateHeight(tags)}
+        });
+      }
+    }
+
+    // Sun 위치
+    const now = new Date();
+    const ang = sunAngles(now, centerLatLng[0], centerLatLng[1]);
+
+    // 그림자 생성
+    const shadows = computeShadows(polys, trees, ang.az, ang.alt);
+
+    // 표시
+    shadowLayer.clearLayers();
+    // (디버그용) 본체 윤곽 살짝
+    L.geoJSON({type:'FeatureCollection',features:polys},{style:{color:'#666',weight:1,fillOpacity:0.06}}).addTo(shadowLayer);
+    // 그림자
+    shadows.forEach(s=>{
+      L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.45},className:'blur-shadow'}).addTo(shadowLayer);
+    });
+
+    panel.textContent = (myLocation
+      ? '📍 현재 위치 기준 그림자 표시 완료'
+      : '📌 기본 위치(서울) 기준 그림자 표시 완료')
+      + ` • ${polys.length}개 폴리곤 / 나무 ${trees.length}개`;
+  }catch(e){
+    console.error(e);
+    panel.textContent = '그림자 로딩 실패: ' + (e.message||e);
+  }
+}
+
+// ---------- 위치 ----------
 function initLocation(){
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
       myLocation=[pos.coords.latitude,pos.coords.longitude];
       map.setView(myLocation,16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
       L.circleMarker(myLocation,{radius:6,color:'#0a0'}).addTo(map);
       drawShadows(myLocation);
+      map.on('moveend', ()=>drawShadows(myLocation));
     }, err=>{
+      // 권한 없어도 기본 위치로 그림자 표시 (먹통 방지)
+      map.setView(DEFAULT_LOC,16);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
       panel.textContent = '위치 권한 없음 → 서울 기준 그림자 표시';
-      map.setView(defaultLocation,16);
-      drawShadows(defaultLocation);
-    }, {enableHighAccuracy:true});
+      drawShadows(DEFAULT_LOC);
+      map.on('moveend', ()=>drawShadows(DEFAULT_LOC));
+    }, {enableHighAccuracy:true, timeout:15000});
   } else {
+    map.setView(DEFAULT_LOC,16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
     panel.textContent = '위치 정보 미지원 → 서울 기준 그림자 표시';
-    map.setView(defaultLocation,16);
-    drawShadows(defaultLocation);
+    drawShadows(DEFAULT_LOC);
+    map.on('moveend', ()=>drawShadows(DEFAULT_LOC));
   }
 }
 
 initLocation();
-map.on('moveend', ()=> drawShadows(myLocation || defaultLocation));
 </script>
 </body>
 </html>
