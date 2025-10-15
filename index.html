@@ -15,22 +15,39 @@ html,body,#map{height:100%;margin:0;padding:0;}
   box-shadow:0 2px 6px rgba(0,0,0,0.25);
   font-size:14px;max-width:90vw;
 }
-#timeControl{
-  position:absolute;top:80px;left:10px;z-index:9999;
-  background:rgba(255,255,255,0.95);
-  padding:8px 12px;border-radius:12px;
-  box-shadow:0 2px 6px rgba(0,0,0,0.25);
-  font-size:14px;
+#timeControl {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 9999;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 8px 12px;
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  font-size: 14px;
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+#timePicker {
+  font-size: 14px;
+  padding: 2px;
+}
+#nowBtn {
+  font-size: 13px;
+  padding: 3px 6px;
+  cursor: pointer;
 }
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="panel">지도 로딩 중...</div>
+
+<!-- 🕒 시간 조절 UI -->
 <div id="timeControl">
-  <label>시간 조정:
-    <input type="time" id="timePicker" step="300">
-  </label>
+  <label for="timePicker">시간 조정:</label>
+  <input type="time" id="timePicker" step="300">
   <button id="nowBtn">지금 시간</button>
 </div>
 
@@ -162,36 +179,4 @@ function initLocation(){
       map.setView(DEFAULT_LOC,16);
       panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시';
       drawShadows(DEFAULT_LOC, currentDate);
-      map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
-    }, {enableHighAccuracy:true, timeout:10000});
-  } else {
-    map.setView(DEFAULT_LOC,16);
-    panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)로 표시';
-    drawShadows(DEFAULT_LOC, currentDate);
-    map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
-  }
-}
-
-// ⏰ 시간 조절 기능
-function getSelectedDate() {
-  const d = new Date();
-  if (timePicker.value) {
-    const [h, m] = timePicker.value.split(':');
-    d.setHours(parseInt(h), parseInt(m));
-  }
-  return d;
-}
-timePicker.addEventListener('input', ()=>{
-  currentDate = getSelectedDate();
-  drawShadows(myLocation || DEFAULT_LOC, currentDate);
-});
-nowBtn.addEventListener('click', ()=>{
-  timePicker.value = '';
-  currentDate = new Date();
-  drawShadows(myLocation || DEFAULT_LOC, currentDate);
-});
-
-initLocation();
-</script>
-</body>
-</html>
+      m
