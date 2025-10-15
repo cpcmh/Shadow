@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 실시간 그림자 지도 - 최적화 통합버전</title>
+<title>🌇 실시간 그림자+보도 지도</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -29,16 +29,8 @@ html,body,#map{height:100%;margin:0;padding:0;}
   gap: 5px;
   flex-wrap: wrap;
 }
-#timePicker {
-  font-size: 14px;
-  padding: 2px;
-  min-width: 100px;
-}
-#nowBtn {
-  font-size: 13px;
-  padding: 3px 6px;
-  cursor: pointer;
-}
+#timePicker { font-size: 14px; padding: 2px; min-width: 100px; }
+#nowBtn { font-size: 13px; padding: 3px 6px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -61,7 +53,7 @@ const panel = document.getElementById('panel');
 const timePicker = document.getElementById('timePicker');
 const nowBtn = document.getElementById('nowBtn');
 
-const DEFAULT_LOC = [37.5665, 126.9780]; // 서울 시청
+const DEFAULT_LOC = [37.5665, 126.9780];
 let myLocation = null;
 let currentDate = new Date();
 
@@ -74,9 +66,10 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 const shadowLayer = L.layerGroup().addTo(map);
+const footwayLayer = L.layerGroup().addTo(map);
 panel.textContent = '📌 기본 위치 로딩 완료 — 위치 권한 확인 중...';
 
-// 🌞 태양 위치 계산
+// ☀️ 태양 위치 계산
 function sunAngles(date, lat, lon){
   const p = SunCalc.getPosition(date, lat, lon);
   return { az: (180 + p.azimuth * 180/Math.PI)%360, alt: p.altitude*180/Math.PI };
@@ -117,6 +110,7 @@ async function fetchOSM(bounds){
     way["building"](${s},${w},${n},${e});
     way["landuse"~"residential|commercial"](${s},${w},${n},${e});
     way["amenity"="school"](${s},${w},${n},${e});
+    way["highway"~"footway|pedestrian"](${s},${w},${n},${e});
   );
   out body; >; out skel qt;
   `;
@@ -128,48 +122,79 @@ async function fetchOSM(bounds){
   return res.json();
 }
 
-// 🌇 그림자 렌더링
+let footwayFeatures = [];
+
+// 🌇 그림자 + 보도 렌더링
 async function drawShadows(center, date){
   try {
-    panel.textContent = '☀️ 그림자 계산 중...';
+    panel.textContent = '☀️ 데이터 불러오는 중...';
     const bounds = map.getBounds().pad(0.3);
     const data = await fetchOSM(bounds);
     const nodes = {};
     data.elements.forEach(el=>{if(el.type==='node') nodes[el.id]=[el.lon,el.lat];});
 
-    const features=[];
+    const buildingFeatures=[];
+    footwayFeatures=[];
+
     data.elements.forEach(el=>{
       if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
         const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
         if(coords.length>3){
           const f=coords[0], l=coords[coords.length-1];
           if(f[0]!==l[0] || f[1]!==l[1]) coords.push(f);
-          features.push({
+          buildingFeatures.push({
             type:'Feature',
             geometry:{type:'Polygon',coordinates:[coords]},
             properties:{height:estimateHeight(el.tags)}
           });
         }
       }
+      if(el.type==='way' && el.tags?.highway){
+        const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
+        if(coords.length>1){
+          footwayFeatures.push({
+            type:'Feature',
+            geometry:{type:'LineString',coordinates:coords},
+            properties:{}
+          });
+        }
+      }
     });
 
     const ang = sunAngles(date, center[0], center[1]);
-    const shadows = computeShadows(features, ang.az, ang.alt);
+    const shadows = computeShadows(buildingFeatures, ang.az, ang.alt);
 
     shadowLayer.clearLayers();
-    L.geoJSON({type:'FeatureCollection',features:features},{style:{color:'#555',weight:1,fillOpacity:0.05}}).addTo(shadowLayer);
+    footwayLayer.clearLayers();
+
+    // 건물 및 그림자 표시
+    L.geoJSON({type:'FeatureCollection',features:buildingFeatures},
+      {style:{color:'#555',weight:1,fillOpacity:0.05}}).addTo(shadowLayer);
     shadows.forEach(s=>{
       L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer);
     });
 
-    panel.textContent = `✅ 그림자 계산 완료 (${features.length}개 건물) / 태양 고도 ${ang.alt.toFixed(1)}°`;
+    // 보도와 그림자 교차 여부
+    const shadowCollection = { type:'FeatureCollection', features:shadows };
+
+    L.geoJSON({type:'FeatureCollection',features:footwayFeatures}, {
+      style: feature => {
+        const inShadow = shadows.some(sh => turf.booleanIntersects(feature, sh));
+        return {
+          color: inShadow ? 'green' : '#999',
+          weight: 4
+        };
+      }
+    }).addTo(footwayLayer);
+
+    panel.textContent = `✅ 그림자 ${buildingFeatures.length}개, 보도 ${footwayFeatures.length}개 / 고도 ${ang.alt.toFixed(1)}°`;
   } catch(err){
     console.warn('그림자 계산 오류:', err);
-    panel.textContent = '⚠️ 그림자 데이터 불러오기 실패 — 지도는 정상 표시 중';
+    panel.textContent = '⚠️ 데이터 불러오기 실패 — 지도는 정상 표시 중';
   }
 }
 
-// 📍 위치 권한 처리 (지도를 먼저 띄우고 위치는 나중에 반영)
+// 📍 위치 권한 처리
 function initLocation(){
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
@@ -180,7 +205,7 @@ function initLocation(){
       map.on('moveend', ()=>drawShadows(myLocation, currentDate));
     }, err=>{
       console.warn('위치 권한 거부 또는 오류', err);
-      panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시 중';
+      panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)';
       drawShadows(DEFAULT_LOC, currentDate);
       map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
     }, {enableHighAccuracy:true, timeout:8000});
@@ -210,8 +235,6 @@ nowBtn.addEventListener('click', ()=>{
   drawShadows(myLocation || DEFAULT_LOC, currentDate);
 });
 
-// 🌍 지도 먼저 띄우고, 그림자 로딩은 비동기로 진행
-panel.textContent = '🗺️ 지도 로딩 완료 — 그림자 계산 시작...';
 initLocation();
 </script>
 </body>
