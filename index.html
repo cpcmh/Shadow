@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌇 실시간 그림자 지도 - 통합버전</title>
+<title>🌇 실시간 그림자 지도 - 통합버전 (시간조절 고정)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
@@ -19,7 +19,7 @@ html,body,#map{height:100%;margin:0;padding:0;}
   position: absolute;
   top: 10px;
   right: 10px;
-  z-index: 9999;
+  z-index: 10000;
   background: rgba(255, 255, 255, 0.95);
   padding: 8px 12px;
   border-radius: 12px;
@@ -32,6 +32,7 @@ html,body,#map{height:100%;margin:0;padding:0;}
 #timePicker {
   font-size: 14px;
   padding: 2px;
+  min-width: 100px;
 }
 #nowBtn {
   font-size: 13px;
@@ -46,9 +47,9 @@ html,body,#map{height:100%;margin:0;padding:0;}
 
 <!-- 🕒 시간 조절 UI -->
 <div id="timeControl">
-  <label for="timePicker">시간 조정:</label>
+  <label for="timePicker">시간:</label>
   <input type="time" id="timePicker" step="300">
-  <button id="nowBtn">지금 시간</button>
+  <button id="nowBtn">지금</button>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -71,8 +72,6 @@ const shadowLayer = L.layerGroup().addTo(map);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap, Carto'
-}).on('tileerror',()=>{
-  panel.textContent = '⚠️ 타일 로드 실패 — 네트워크 또는 차단 가능성';
 }).addTo(map);
 
 // ☀️ 태양 위치 계산
@@ -179,4 +178,36 @@ function initLocation(){
       map.setView(DEFAULT_LOC,16);
       panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시';
       drawShadows(DEFAULT_LOC, currentDate);
-      m
+      map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
+    }, {enableHighAccuracy:true, timeout:10000});
+  } else {
+    map.setView(DEFAULT_LOC,16);
+    panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)로 표시';
+    drawShadows(DEFAULT_LOC, currentDate);
+    map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
+  }
+}
+
+// ⏰ 시간 조절 기능
+function getSelectedDate() {
+  const d = new Date();
+  if (timePicker.value) {
+    const [h, m] = timePicker.value.split(':');
+    d.setHours(parseInt(h), parseInt(m));
+  }
+  return d;
+}
+timePicker.addEventListener('input', ()=>{
+  currentDate = getSelectedDate();
+  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+});
+nowBtn.addEventListener('click', ()=>{
+  timePicker.value = '';
+  currentDate = new Date();
+  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+});
+
+initLocation();
+</script>
+</body>
+</html>
