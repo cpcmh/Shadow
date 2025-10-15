@@ -3,38 +3,59 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌤️ 실시간 그림자 지도 - 안정화 버전</title>
+<title>🌇 실시간 그림자 지도 - 통합버전</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
 .blur-shadow{filter:blur(3px);opacity:0.45;}
 #panel{
   position:absolute;top:10px;left:10px;z-index:9999;
-  background:rgba(255,255,255,0.95);padding:8px 12px;
-  border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,0.25);
+  background:rgba(255,255,255,0.95);
+  padding:8px 12px;border-radius:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25);
   font-size:14px;max-width:90vw;
+}
+#timeControl{
+  position:absolute;top:80px;left:10px;z-index:9999;
+  background:rgba(255,255,255,0.95);
+  padding:8px 12px;border-radius:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.25);
+  font-size:14px;
 }
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="panel">지도 로딩 중...</div>
+<div id="timeControl">
+  <label>시간 조정:
+    <input type="time" id="timePicker" step="300">
+  </label>
+  <button id="nowBtn">지금 시간</button>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
 <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
 <script>
+const panel = document.getElementById('panel');
+const timePicker = document.getElementById('timePicker');
+const nowBtn = document.getElementById('nowBtn');
+
+const DEFAULT_LOC = [37.5665, 126.9780]; // 서울
+let myLocation = null;
+let currentDate = new Date();
+
 const map = L.map('map');
 const shadowLayer = L.layerGroup().addTo(map);
-const panel = document.getElementById('panel');
-const DEFAULT_LOC = [37.5665, 126.9780]; // 서울시청
-let myLocation = null;
 
-// 🗺️ 지도 타일 (기본 OSM이 느릴 경우 HOT 미러 사용)
-L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+// 🗺️ 안정적인 타일 서버
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
   maxZoom: 19,
-  attribution: '&copy; OpenStreetMap contributors'
+  attribution: '&copy; OpenStreetMap, Carto'
+}).on('tileerror',()=>{
+  panel.textContent = '⚠️ 타일 로드 실패 — 네트워크 또는 차단 가능성';
 }).addTo(map);
 
 // ☀️ 태양 위치 계산
@@ -87,7 +108,7 @@ async function fetchOSM(bounds){
 }
 
 // 🌇 그림자 렌더링
-async function drawShadows(center){
+async function drawShadows(center, date){
   try {
     panel.textContent = '그림자 계산 중...';
     const bounds = map.getBounds().pad(0.3);
@@ -100,7 +121,6 @@ async function drawShadows(center){
       if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
         const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
         if(coords.length>3){
-          // 폴리곤 닫기
           const f=coords[0], l=coords[coords.length-1];
           if(f[0]!==l[0] || f[1]!==l[1]) coords.push(f);
           features.push({
@@ -112,7 +132,7 @@ async function drawShadows(center){
       }
     });
 
-    const ang = sunAngles(new Date(), center[0], center[1]);
+    const ang = sunAngles(date, center[0], center[1]);
     const shadows = computeShadows(features, ang.az, ang.alt);
 
     shadowLayer.clearLayers();
@@ -121,7 +141,7 @@ async function drawShadows(center){
       L.geoJSON(s,{style:{color:'#000',weight:0,fillOpacity:0.5},className:'blur-shadow'}).addTo(shadowLayer);
     });
 
-    panel.textContent = `✅ 그림자 계산 완료 (${features.length}개 건물)`;
+    panel.textContent = `✅ 그림자 계산 완료 (${features.length}개 건물) / 고도 ${ang.alt.toFixed(2)}°`;
   } catch(err){
     console.error('그림자 계산 오류:', err);
     panel.textContent = '⚠️ 데이터 로딩 실패 — 지도를 이동하거나 다시 시도하세요.';
@@ -135,22 +155,41 @@ function initLocation(){
       myLocation=[pos.coords.latitude,pos.coords.longitude];
       map.setView(myLocation,16);
       L.circleMarker(myLocation,{radius:6,color:'#0a0'}).addTo(map);
-      drawShadows(myLocation);
-      map.on('moveend', ()=>drawShadows(myLocation));
+      drawShadows(myLocation, currentDate);
+      map.on('moveend', ()=>drawShadows(myLocation, currentDate));
     }, err=>{
       console.warn('위치 권한 거부 또는 오류', err);
       map.setView(DEFAULT_LOC,16);
       panel.textContent = '📌 위치 권한 없음 — 기본 위치(서울)로 표시';
-      drawShadows(DEFAULT_LOC);
-      map.on('moveend', ()=>drawShadows(DEFAULT_LOC));
+      drawShadows(DEFAULT_LOC, currentDate);
+      map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
     }, {enableHighAccuracy:true, timeout:10000});
   } else {
     map.setView(DEFAULT_LOC,16);
     panel.textContent = '📌 위치 정보 미지원 — 기본 위치(서울)로 표시';
-    drawShadows(DEFAULT_LOC);
-    map.on('moveend', ()=>drawShadows(DEFAULT_LOC));
+    drawShadows(DEFAULT_LOC, currentDate);
+    map.on('moveend', ()=>drawShadows(DEFAULT_LOC, currentDate));
   }
 }
+
+// ⏰ 시간 조절 기능
+function getSelectedDate() {
+  const d = new Date();
+  if (timePicker.value) {
+    const [h, m] = timePicker.value.split(':');
+    d.setHours(parseInt(h), parseInt(m));
+  }
+  return d;
+}
+timePicker.addEventListener('input', ()=>{
+  currentDate = getSelectedDate();
+  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+});
+nowBtn.addEventListener('click', ()=>{
+  timePicker.value = '';
+  currentDate = new Date();
+  drawShadows(myLocation || DEFAULT_LOC, currentDate);
+});
 
 initLocation();
 </script>
