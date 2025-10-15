@@ -3,15 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>🌤️ 실시간 그림자 지도 (Relation 완전 지원)</title>
+<title>🌤️ 실시간 그림자 지도 (Relation 완전 처리)</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 html,body,#map{height:100%;margin:0;padding:0;}
 .blur-shadow{filter:blur(3px);opacity:0.45;}
 #panel{
-  position:absolute;
-  top:10px;left:10px;
-  z-index:9999;
+  position:absolute;top:10px;left:10px;z-index:9999;
   background:rgba(255,255,255,0.95);
   padding:8px 12px;
   border-radius:12px;
@@ -73,7 +71,7 @@ function computeShadow(features, trees, az, alt){
 async function fetchOSM(bounds){
   const s=bounds.getSouth(), w=bounds.getWest(), n=bounds.getNorth(), e=bounds.getEast();
   const q = `
-    [out:json][timeout:25];
+    [out:json][timeout:30];
     (
       way["building"](${s},${w},${n},${e});
       way["landuse"~"residential|commercial"](${s},${w},${n},${e});
@@ -82,9 +80,7 @@ async function fetchOSM(bounds){
       relation["amenity"="school"](${s},${w},${n},${e});
       node["natural"="tree"](${s},${w},${n},${e});
     );
-    out body;
-    >;
-    out skel qt;
+    out body; >; out skel qt;
   `;
   const res = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q});
   return res.json();
@@ -97,14 +93,19 @@ async function drawShadows(center){
   const data = await fetchOSM(bounds);
 
   const nodes = {};
+  const ways = {};
+
   data.elements.forEach(el=>{
     if(el.type==='node') nodes[el.id]=[el.lon,el.lat];
+    if(el.type==='way') ways[el.id]=el;
   });
 
   const features=[], trees=[];
-  data.elements.forEach(el=>{
-    // 🏢 way 처리
-    if(el.type==='way' && (el.tags?.building || el.tags?.landuse || el.tags?.amenity)){
+
+  // way 처리
+  for (const id in ways){
+    const el = ways[id];
+    if(el.tags && (el.tags.building || el.tags.landuse || el.tags.amenity)){
       const coords = el.nodes.map(i=>nodes[i]).filter(Boolean);
       if(coords.length>3){
         features.push({
@@ -114,22 +115,28 @@ async function drawShadows(center){
         });
       }
     }
+  }
 
-    // 🏢 relation 처리
+  // relation 처리
+  data.elements.forEach(el=>{
     if(el.type==='relation' && (el.tags?.landuse || el.tags?.amenity)){
-      // outer 멤버만 추출
-      const outers = el.members.filter(m=>m.role==='outer' && nodes[m.ref]);
-      const coords = outers.map(m=>[nodes[m.ref][0], nodes[m.ref][1]]);
-      if(coords.length>3){
-        features.push({
-          type:'Feature',
-          geometry:{type:'Polygon',coordinates:[coords]},
-          properties:{height:estimateHeight(el.tags)}
-        });
+      const outerWays = el.members.filter(m=>m.role==='outer' && ways[m.ref]);
+      if(outerWays.length){
+        const outerWay = ways[outerWays[0].ref]; // 첫 outer만 사용
+        const coords = outerWay.nodes.map(i=>nodes[i]).filter(Boolean);
+        if(coords.length>3){
+          features.push({
+            type:'Feature',
+            geometry:{type:'Polygon',coordinates:[coords]},
+            properties:{height:estimateHeight(el.tags)}
+          });
+        }
       }
     }
+  });
 
-    // 🌳 나무 처리
+  // 나무 처리
+  data.elements.forEach(el=>{
     if(el.type==='node' && el.tags?.natural==='tree'){
       trees.push({
         type:'Feature',
